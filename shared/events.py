@@ -10,18 +10,21 @@
 # ==========================================================
 
 from datetime import datetime, UTC
-from shared.payloads import SyntheticPayload
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
+
+from shared.payloads import (
+    SyntheticPayload,
+    MuRun2010BPayload,
+)
 
 
 class ScientificEvent(BaseModel):
     """
     Common event envelope shared across the entire pipeline.
 
-    The payload contains source-specific data
-    (Synthetic, CMS, ATLAS, etc.).
+    The payload contains source-specific scientific data.
     """
 
     event_id: str = Field(
@@ -44,7 +47,7 @@ class ScientificEvent(BaseModel):
         description="Version of the event schema."
     )
 
-    payload: SyntheticPayload = Field(
+    payload: SyntheticPayload | MuRun2010BPayload = Field(
         ...,
-        description="Validated payload carried by this event."
+        description="Validated source-specific payload carried by this event."
     )
