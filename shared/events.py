@@ -12,7 +12,7 @@
 from datetime import datetime, UTC
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from shared.payloads import (
     SyntheticPayload,
@@ -25,6 +25,7 @@ class ScientificEvent(BaseModel):
     Common event envelope shared across the entire pipeline.
 
     The payload contains source-specific scientific data.
+    The source field determines which payload model is valid.
     """
 
     event_id: str = Field(
@@ -51,3 +52,28 @@ class ScientificEvent(BaseModel):
         ...,
         description="Validated source-specific payload carried by this event."
     )
+
+    @model_validator(mode="after")
+    def validate_source_payload(self):
+        """
+        Ensure that the event source matches its payload type.
+        """
+
+        if self.source == "synthetic":
+            if not isinstance(self.payload, SyntheticPayload):
+                raise ValueError(
+                    "source='synthetic' requires SyntheticPayload"
+                )
+
+        elif self.source == "murun2010b":
+            if not isinstance(self.payload, MuRun2010BPayload):
+                raise ValueError(
+                    "source='murun2010b' requires MuRun2010BPayload"
+                )
+
+        else:
+            raise ValueError(
+                f"Unsupported event source: {self.source}"
+            )
+
+        return self
