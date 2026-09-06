@@ -33,6 +33,8 @@ from shared.events import ScientificEvent
 from storage.postgres import PostgresEventStore
 
 
+MAX_RETRIES = 3
+
 class Worker:
     """
     Consumes Scientific Events from RabbitMQ
@@ -126,6 +128,51 @@ class Worker:
         self.channel.start_consuming()
 
     # ==========================================================
+    # Retry Message
+    # ==========================================================
+
+    def retry_message(self, properties, body) -> bool:
+        """
+        Republish a failed message with an incremented retry count.
+
+        Returns True if the message was republished for another
+        attempt, otherwise False when the retry limit is reached.
+        """
+
+        retry_count = 0
+
+        if properties.headers:
+            retry_count = properties.headers.get(
+                "x-retry-count",
+                0
+            )
+
+        if retry_count >= MAX_RETRIES:
+            return False
+
+        retry_count += 1
+
+        headers = dict(properties.headers or {})
+        headers["x-retry-count"] = retry_count
+
+        self.channel.basic_publish(
+            exchange="",
+            routing_key="scientific_events",
+            body=body,
+            properties=pika.BasicProperties(
+                delivery_mode=2,
+                headers=headers
+            )
+        )
+
+        print(
+            f"↻ Message scheduled for retry "
+            f"{retry_count}/{MAX_RETRIES}"
+        )
+
+        return True
+
+    # ==========================================================
     # Handle Message
     # ==========================================================
 
@@ -133,64 +180,27 @@ class Worker:
         """
         Decode, validate, persist, and acknowledge one message.
 
-        The RabbitMQ message is acknowledged only after
-        successful PostgreSQL persistence.
+        Permanent failures are sent to the DLQ.
+        Storage failures are retried up to MAX_RETRIES.
         """
 
         print("📩 Message received")
 
-        try:
+        # ======================================================
+        # Decode JSON
+        # ======================================================
 
-            # ==================================================
-            # Decode JSON
-            # ==================================================
+        try:
 
             data = json.loads(body)
 
             print("✅ JSON decoded")
 
-            # ==================================================
-            # Validate Scientific Event
-            # ==================================================
-
-            event = ScientificEvent.model_validate(data)
-
-            print("✅ Event validated")
-            print(event)
-
-            # ==================================================
-            # Persist Event
-            # ==================================================
-
-            print("💾 Persisting event...")
-
-            self.event_store.save(event)
-
-            print("✅ Event persisted")
-
-            # ==================================================
-            # Acknowledge Message
-            # ==================================================
-
-            channel.basic_ack(
-                delivery_tag=method.delivery_tag
-            )
-
-            print("✅ Message acknowledged")
-
         except Exception as error:
 
-            # ==================================================
-            # Processing Failure
-            # ==================================================
-
             print(
-                f"❌ Message processing failed: {error}"
+                f"❌ JSON decoding failed: {error}"
             )
-
-            # ==================================================
-            # Reject Message
-            # ==================================================
 
             channel.basic_nack(
                 delivery_tag=method.delivery_tag,
@@ -198,8 +208,103 @@ class Worker:
             )
 
             print(
-                "↪️ Message rejected and sent to DLQ"
+                "↪️ Invalid message sent to DLQ"
             )
+
+            return
+
+        # ======================================================
+        # Validate Scientific Event
+        # ======================================================
+
+        try:
+
+            event = ScientificEvent.model_validate(data)
+
+            print("✅ Event validated")
+            print(event)
+
+        except Exception as error:
+
+            print(
+                f"❌ Event validation failed: {error}"
+            )
+
+            channel.basic_nack(
+                delivery_tag=method.delivery_tag,
+                requeue=False
+            )
+
+            print(
+                "↪️ Invalid event sent to DLQ"
+            )
+
+            return
+
+        # ======================================================
+        # Persist Event
+        # ======================================================
+
+        try:
+
+            print("💾 Persisting event...")
+
+            persisted = self.event_store.save(event)
+
+            if persisted:
+                print(
+                    f"✅ Event persisted: "
+                    f"{event.event_id}"
+                )
+
+            else:
+                print(
+                    f"ℹ️ Event already persisted — "
+                    f"safe to acknowledge: "
+                    f"{event.event_id}"
+                )
+
+            channel.basic_ack(
+                delivery_tag=method.delivery_tag
+            )
+
+            if persisted:
+                print("✅ Message acknowledged")
+            else:
+                print("✅ Duplicate safely acknowledged")
+
+        except Exception as error:
+
+            print(
+                f"❌ Persistence failed: {error}"
+            )
+
+            # ==================================================
+            # Retry / DLQ
+            # ==================================================
+
+            if self.retry_message(properties, body):
+
+                channel.basic_ack(
+                    delivery_tag=method.delivery_tag
+                )
+
+                print(
+                    "✅ Current message acknowledged "
+                    "after retry was published"
+                )
+
+            else:
+
+                channel.basic_nack(
+                    delivery_tag=method.delivery_tag,
+                    requeue=False
+                )
+
+                print(
+                    "↪️ Retry limit reached; "
+                    "message sent to DLQ"
+                )
 
     # ==========================================================
     # Close
@@ -216,3 +321,23 @@ class Worker:
             self.connection.close()
 
             print("✅ RabbitMQ connection closed")
+
+# ==========================================================
+# Entry Point
+# ==========================================================
+
+if __name__ == "__main__":
+
+    worker = Worker()
+
+    try:
+        worker.connect()
+        worker.connect_storage()
+        worker.declare_queue()
+        worker.consume()
+
+    except KeyboardInterrupt:
+        print("🛑 Worker stopped")
+
+    finally:
+        worker.close()

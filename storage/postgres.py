@@ -87,39 +87,47 @@ class PostgresEventStore(EventStore):
     # Save Event
     # ==========================================================
 
-    def save(self, event: ScientificEvent) -> None:
+    def save(self, event: ScientificEvent) -> bool:
         """
         Persist one validated ScientificEvent.
+
+        Returns True when a new event is persisted.
+        Returns False when the event was already persisted.
         """
 
-        with self.connection.cursor() as cursor:
+        try:
 
-            cursor.execute(
-                """
-                INSERT INTO scientific_events (
-                    event_id,
-                    timestamp,
-                    source,
-                    schema_version,
-                    payload
+            with self.connection.cursor() as cursor:
+
+                cursor.execute(
+                    """
+                    INSERT INTO scientific_events (
+                        event_id,
+                        timestamp,
+                        source,
+                        schema_version,
+                        payload
+                    )
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        event.event_id,
+                        event.timestamp,
+                        event.source,
+                        event.schema_version,
+                        json.dumps(event.payload.model_dump(mode="json")),
+                    ),
                 )
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                (
-                    event.event_id,
-                    event.timestamp,
-                    event.source,
-                    event.schema_version,
-                    json.dumps(event.payload.model_dump(mode="json")),
-                ),
-            )
 
-        self.connection.commit()
+            self.connection.commit()
 
-        print(
-            f"✅ Event persisted: "
-            f"{event.event_id}"
-        )
+            return True
+
+        except psycopg.errors.UniqueViolation:
+
+            self.connection.rollback()
+
+            return False
 
     # ==========================================================
     # Close
