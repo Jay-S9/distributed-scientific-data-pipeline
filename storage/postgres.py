@@ -13,8 +13,12 @@
 # ==========================================================
 
 import json
+import os
 
 import psycopg
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from shared.events import ScientificEvent
 from storage.base import EventStore
@@ -25,20 +29,24 @@ class PostgresEventStore(EventStore):
     PostgreSQL implementation of the EventStore contract.
     """
 
-    def __init__(
-        self,
-        host: str = "localhost",
-        port: int = 5432,
-        database: str = "scientific_pipeline",
-        user: str = "pipeline",
-        password: str = "pipeline",
-    ):
+    def __init__(self):
+        self.host = os.getenv("POSTGRES_HOST", "localhost")
+        self.port = int(os.getenv("POSTGRES_PORT", "5432"))
+        self.database = os.getenv("POSTGRES_DB", "scientific_pipeline")
+        self.user = os.getenv("POSTGRES_USER", "pipeline")
+        self.password = os.getenv("POSTGRES_PASSWORD")
+
+        if not self.password:
+            raise ValueError(
+                "POSTGRES_PASSWORD environment variable is not set."
+            )
+
         self.connection_string = (
-            f"host={host} "
-            f"port={port} "
-            f"dbname={database} "
-            f"user={user} "
-            f"password={password}"
+            f"host={self.host} "
+            f"port={self.port} "
+            f"dbname={self.database} "
+            f"user={self.user} "
+            f"password={self.password}"
         )
 
     # ==========================================================
